@@ -21,24 +21,22 @@
 #                                                                            #
 ##############################################################################
 
+import asyncio
 import hashlib
 import json
 import os
 import shutil
 import subprocess
 import traceback
+from typing import Annotated
 
-from flask import Flask
-from flask import request
-
-from werkzeug.exceptions import BadRequest
-from werkzeug.exceptions import HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException
 
 import coloredlogs
 import logging
 log = None
 
-app = Flask(__name__)
+app = FastAPI()
 
 # Load configuration
 with open("config/config.json") as f_in:
@@ -69,16 +67,20 @@ def set_logger(debug):
     coloredlogs.install(fmt='%(asctime)s %(levelname)s:: %(message)s',
                         datefmt='%H:%M:%S', level=loglevel, logger=log)
 
+async def async_run_command(command):
+    """
+    Run a command and return the output
+    """
+    p = await asyncio.create_subprocess_exec(command[0], *command[1:], stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    stdout, stderr = await p.communicate()
+    return stdout, stderr
 
-def sha256_hash(stream):
+def sha256_hash(str):
     """
-    Compute the sha256 of the stream in input
+    Compute the sha256 of the string
     """
-    stream.seek(0)
     sha256_hash = hashlib.sha256()
-    # Read and update hash string value in blocks of 4K
-    for byte_block in iter(lambda: stream.read(4096), b""):
-        sha256_hash.update(byte_block)
+    sha256_hash.update(str)
     return sha256_hash.hexdigest()
 
 
@@ -107,7 +109,7 @@ def server_init():
         os.mkdir(GHIDRA_OUTPUT)
 
     # 400 MB limit
-    app.config["MAX_CONTENT_LENGTH"] = 400 * 1024 * 1024
+    #app.config["MAX_CONTENT_LENGTH"] = 400 * 1024 * 1024
 
     return
 
@@ -116,38 +118,34 @@ def server_init():
 #       GHIDRAAAS APIs                      #
 #############################################
 
-@app.route("/")
-def index():
+@app.get("/")
+async def index():
     """
     Index page
     """
-    return ("Hi! This is Ghidraaas", 200)
+    return "Hi! This is Ghidraaas"
 
 
-@app.route("/ghidra/api/analyze_sample/", methods=["POST"])
-def analyze_sample():
+@app.post("/ghidra/api/analyze_sample/")
+async def analyze_sample(sample: UploadFile):
     """
     Upload a sample, save it on the file system,
     and launch Ghidra analysis.
     """
+
     try:
-        if not request.files.get("sample"):
-            raise BadRequest("sample is required")
-
-        sample_content = request.files.get("sample").stream.read()
+        sample_content = await sample.read()
         if len(sample_content) == 0:
-            raise BadRequest("Empty file received")
+            raise HTTPException(status_code=500, detail="Empty file received")
 
-        stream = request.files.get("sample").stream
-        sha256 = sha256_hash(stream)
+        sha256 = sha256_hash(sample_content)
 
         sample_path = os.path.join(SAMPLES_DIR, sha256)
-        stream.seek(0)
         with open(sample_path, "wb") as f_out:
-            f_out.write(stream.read())
+            f_out.write(sample_content)
 
         if not os.path.isfile(sample_path):
-            raise BadRequest("File saving failure")
+            raise HTTPException(status_code=500, detail="File saving failure")
 
         log.debug("New sample saved (sha256: %s)" % sha256)
 
@@ -162,22 +160,20 @@ def analyze_sample():
                        sha256,
                        "-import",
                        sample_path]
-            p = subprocess.Popen(command, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT)
-            p.wait()
-            print(''.join(s.decode("utf-8") for s in list(p.stdout)))
+            stdout, stderr = await async_run_command(command)
+            print((stdout, stderr))
             log.debug("Ghidra analysis completed")
 
         os.remove(sample_path)
         log.debug("Sample removed")
-        r = {"sha256": sha256}
-        return (r, 200)
+        return {"sha256": sha256}
 
-    except BadRequest:
+    except HTTPException:
         raise
 
-    except Exception:
-        raise BadRequest("Sample analysis failed")
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Sample analysis failed: {e}")
 
 
 @app.route("/ghidra/api/get_functions_list_detailed/<string:sha256>")
@@ -268,15 +264,15 @@ def get_functions_list(sha256):
                 with open(output_path) as f_in:
                     return (f_in.read(), 200)
             else:
-                raise BadRequest("FunctionsList plugin failure")
+                raise HTTPException(status_code=500, detail="FunctionsList plugin failure")
         else:
-            raise BadRequest("Sample has not been analyzed")
+            raise HTTPException(status_code=500, detail="Sample has not been analyzed")
 
-    except BadRequest:
+    except HTTPException:
         raise
 
-    except Exception:
-        raise BadRequest("Sample analysis failed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Sample analysis failed: {e}")
 
 
 @app.route("/ghidra/api/get_decompiled_function/<string:sha256>/<string:offset>")
@@ -548,17 +544,18 @@ def ida_plugin_checkout():
 #############################################
 #       ERROR HANDLING                      #
 #############################################
-@app.errorhandler(BadRequest)
-@app.errorhandler(HTTPException)
-@app.errorhandler(Exception)
-def handle_error(e):
-    """
-    Manage logging and responses in case of error.
-    """
-    if isinstance(e, HTTPException):
-        return (str(e), e.code)
-    else:
-        return (traceback.format_exc(), 500)
+# TODO
+# @app.errorhandler(BadRequest)
+# @app.errorhandler(HTTPException)
+# @app.errorhandler(Exception)
+# def handle_error(e):
+#     """
+#     Manage logging and responses in case of error.
+#     """
+#     if isinstance(e, HTTPException):
+#         return (str(e), e.code)
+#     else:
+#         return (traceback.format_exc(), 500)
 
 
 set_logger(True)

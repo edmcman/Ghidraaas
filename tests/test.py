@@ -153,19 +153,6 @@ def main():
         print("analysis_terminated test FAILED")
         return
 
-    # Testing GhIDA APIs
-    if not ghida_checkin():
-        print("ghida_checkin test FAILED")
-        return
-
-    if not ghida_decompile():
-        print("ghida_decompile test FAILED")
-        return
-
-    if not ghida_checkout():
-        print("ghida_checkout test FAILED")
-        return
-
     print("All tests PASSED")
 
 

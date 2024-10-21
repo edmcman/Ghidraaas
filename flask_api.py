@@ -170,7 +170,8 @@ def analyze_sample():
 
         os.remove(sample_path)
         log.debug("Sample removed")
-        return ("Analysis completed", 200)
+        r = {"sha256": sha256}
+        return (r, 200)
 
     except BadRequest:
         raise

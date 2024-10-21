@@ -30,7 +30,8 @@ import subprocess
 import traceback
 from typing import Annotated
 
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 import coloredlogs
 import logging
@@ -74,6 +75,14 @@ async def async_run_command(command):
     p = await asyncio.create_subprocess_exec(command[0], *command[1:], stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     stdout, stderr = await p.communicate()
     return stdout, stderr
+
+def get_project_path(sha256):
+    project_path = os.path.join(GHIDRA_PROJECT, sha256 + ".gpr")
+    # Check if the sample has been analyzed
+    if os.path.isfile(project_path):
+        return project_path
+    else:
+        raise HTTPException(404, "Sample has not been analyzed")
 
 def sha256_hash(str):
     """
@@ -133,430 +142,171 @@ async def analyze_sample(sample: UploadFile):
     and launch Ghidra analysis.
     """
 
-    try:
-        sample_content = await sample.read()
-        if len(sample_content) == 0:
-            raise HTTPException(status_code=500, detail="Empty file received")
+    sample_content = await sample.read()
+    if len(sample_content) == 0:
+        raise HTTPException(status_code=500, detail="Empty file received")
 
-        sha256 = sha256_hash(sample_content)
+    sha256 = sha256_hash(sample_content)
 
-        sample_path = os.path.join(SAMPLES_DIR, sha256)
-        with open(sample_path, "wb") as f_out:
-            f_out.write(sample_content)
+    sample_path = os.path.join(SAMPLES_DIR, sha256)
+    with open(sample_path, "wb") as f_out:
+        f_out.write(sample_content)
 
-        if not os.path.isfile(sample_path):
-            raise HTTPException(status_code=500, detail="File saving failure")
+    if not os.path.isfile(sample_path):
+        raise HTTPException(status_code=500, detail="File saving failure")
 
-        log.debug("New sample saved (sha256: %s)" % sha256)
+    log.debug("New sample saved (sha256: %s)" % sha256)
 
-        # Check if the sample has been analyzed
-        project_path = os.path.join(GHIDRA_PROJECT, sha256 + ".gpr")
-        if not os.path.isfile(project_path):
-            log.debug("Ghidra analysis started")
+    # Check if the sample has been analyzed
+    project_path = os.path.join(GHIDRA_PROJECT, sha256 + ".gpr")
+    if not os.path.isfile(project_path):
+        log.debug("Ghidra analysis started")
 
-            # Import the sample in Ghidra and perform the analysis
-            command = [GHIDRA_HEADLESS,
-                       GHIDRA_PROJECT,
-                       sha256,
-                       "-import",
-                       sample_path]
-            stdout, stderr = await async_run_command(command)
-            print((stdout, stderr))
-            log.debug("Ghidra analysis completed")
+        # Import the sample in Ghidra and perform the analysis
+        command = [GHIDRA_HEADLESS,
+                    GHIDRA_PROJECT,
+                    sha256,
+                    "-import",
+                    sample_path]
+        stdout, stderr = await async_run_command(command)
+        log.debug("Ghidra analysis completed")
 
-        os.remove(sample_path)
-        log.debug("Sample removed")
-        return {"sha256": sha256}
+    os.remove(sample_path)
+    log.debug("Sample removed")
+    return {"sha256": sha256}
 
-    except HTTPException:
-        raise
-
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Sample analysis failed: {e}")
-
-
-@app.route("/ghidra/api/get_functions_list_detailed/<string:sha256>")
-def get_functions_list_detailed(sha256):
+@app.get("/ghidra/api/get_functions_list_detailed/{sha256}")
+async def get_functions_list_detailed(sha256: str):
     """
     Given the sha256 of a sample, returns the list of functions.
     If the sample has not been analyzed, returns an error.
     """
-    try:
-        project_path = os.path.join(GHIDRA_PROJECT, sha256 + ".gpr")
-        # Check if the sample has been analyzed
-        if os.path.isfile(project_path):
-            output_path = os.path.join(
-                GHIDRA_OUTPUT, sha256 + "functions_list_a.json")
+    project_path = get_project_path(sha256)
+    output_path = os.path.join(
+        GHIDRA_OUTPUT, sha256 + "functions_list_a.json")
 
-            command = [GHIDRA_HEADLESS,
-                       GHIDRA_PROJECT,
-                       sha256,
-                       "-process",
-                       sha256,
-                       "-noanalysis",
-                       "-scriptPath",
-                       GHIDRA_SCRIPT,
-                       "-postScript",
-                       "FunctionsListA.py",
-                       output_path,
-                       "-log",
-                       "ghidra_log.txt"]
-            # Execute Ghidra plugin
-            log.debug("Ghidra analysis started")
-            p = subprocess.Popen(command, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT)
-            p.wait()
-            print(''.join(s.decode("utf-8") for s in list(p.stdout)))
-            log.debug("Ghidra analysis completed")
+    command = [GHIDRA_HEADLESS,
+                GHIDRA_PROJECT,
+                sha256,
+                "-process",
+                sha256,
+                "-noanalysis",
+                "-scriptPath",
+                GHIDRA_SCRIPT,
+                "-postScript",
+                "FunctionsListA.py",
+                output_path,
+                "-log",
+                "ghidra_log.txt"]
+    # Execute Ghidra plugin
+    log.debug("Ghidra analysis started")
+    stdout, stderr = await async_run_command(command)
+    log.debug("Ghidra analysis completed")
 
-            # Check if JSON response is available
-            if os.path.isfile(output_path):
-                with open(output_path) as f_in:
-                    return (f_in.read(), 200)
-            else:
-                raise BadRequest("FunctionsList plugin failure")
-        else:
-            raise BadRequest("Sample has not been analyzed")
+    # Check if JSON response is available
+    if os.path.isfile(output_path):
+        with open(output_path) as f_in:
+            return f_in.read()
+    else:
+        raise HTTPException(500, "FunctionsList plugin failure")
 
-    except BadRequest:
-        raise
-
-    except Exception:
-        raise BadRequest("Sample analysis failed")
-
-
-@app.route("/ghidra/api/get_functions_list/<string:sha256>")
-def get_functions_list(sha256):
+@app.get("/ghidra/api/get_functions_list/{sha256}")
+async def get_functions_list(sha256: str):
     """
     Given the sha256 of a sample, returns the list of functions.
     If the sample has not been analyzed, returns an error.
     """
-    try:
-        project_path = os.path.join(GHIDRA_PROJECT, sha256 + ".gpr")
-        # Check if the sample has been analyzed
-        if os.path.isfile(project_path):
-            output_path = os.path.join(
-                GHIDRA_OUTPUT, sha256 + "functions_list.json")
-            command = [GHIDRA_HEADLESS,
-                       GHIDRA_PROJECT,
-                       sha256,
-                       "-process",
-                       sha256,
-                       "-noanalysis",
-                       "-scriptPath",
-                       GHIDRA_SCRIPT,
-                       "-postScript",
-                       "FunctionsList.py",
-                       output_path,
-                       "-log",
-                       "ghidra_log.txt"]
-            # Execute Ghidra plugin
-            log.debug("Ghidra analysis started")
-            p = subprocess.Popen(command, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT)
-            p.wait()
-            print(''.join(s.decode("utf-8") for s in list(p.stdout)))
-            log.debug("Ghidra analysis completed")
+    project_path = get_project_path(sha256)
+    output_path = os.path.join(
+        GHIDRA_OUTPUT, sha256 + "functions_list.json")
+    command = [GHIDRA_HEADLESS,
+                GHIDRA_PROJECT,
+                sha256,
+                "-process",
+                sha256,
+                "-noanalysis",
+                "-scriptPath",
+                GHIDRA_SCRIPT,
+                "-postScript",
+                "FunctionsList.py",
+                output_path,
+                "-log",
+                "ghidra_log.txt"]
+    # Execute Ghidra plugin
+    log.debug("Ghidra analysis started")
+    stdout, stderr = await async_run_command(command)
+    log.debug("Ghidra analysis completed")
 
-            # Check if JSON response is available
-            if os.path.isfile(output_path):
-                with open(output_path) as f_in:
-                    return (f_in.read(), 200)
-            else:
-                raise HTTPException(status_code=500, detail="FunctionsList plugin failure")
-        else:
-            raise HTTPException(status_code=500, detail="Sample has not been analyzed")
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Sample analysis failed: {e}")
+    # Check if JSON response is available
+    if os.path.isfile(output_path):
+        with open(output_path) as f_in:
+            return f_in.read()
+    else:
+        raise HTTPException(status_code=500, detail="FunctionsList plugin failure")
 
 
-@app.route("/ghidra/api/get_decompiled_function/<string:sha256>/<string:offset>")
-def get_decompiled_function(sha256, offset):
+@app.get("/ghidra/api/get_decompiled_function/{sha256}/{offset}")
+async def get_decompiled_function(sha256: str, offset: str):
     """
     Given a sha256, and an offset, returns the decompiled code of the
     function. Returns an error if the sample has not been analyzed by Ghidra,
     or if the offset does not correspond to a function
     """
-    try:
-        project_path = os.path.join(GHIDRA_PROJECT, sha256 + ".gpr")
-        # Check if the sample has been analyzed
-        if os.path.isfile(project_path):
-            output_path = os.path.join(
-                GHIDRA_OUTPUT, sha256 + "function_decompiled.json")
-            # Call the DecompileFunction Ghidra plugin
-            command = [GHIDRA_HEADLESS,
-                       GHIDRA_PROJECT,
-                       sha256,
-                       "-process",
-                       sha256,
-                       "-noanalysis",
-                       "-scriptPath",
-                       GHIDRA_SCRIPT,
-                       "-postScript",
-                       "FunctionDecompile.py",
-                       offset,
-                       output_path,
-                       "-log",
-                       "ghidra_log.txt"]
-            # Execute Ghidra plugin
-            log.debug("Ghidra analysis started")
-            p = subprocess.Popen(command, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT)
-            p.wait()
-            print(''.join(s.decode("utf-8") for s in list(p.stdout)))
-            log.debug("Ghidra analysis completed")
+    project_path = get_project_path(sha256)
+    output_path = os.path.join(
+        GHIDRA_OUTPUT, sha256 + "function_decompiled.json")
+    # Call the DecompileFunction Ghidra plugin
+    command = [GHIDRA_HEADLESS,
+                GHIDRA_PROJECT,
+                sha256,
+                "-process",
+                sha256,
+                "-noanalysis",
+                "-scriptPath",
+                GHIDRA_SCRIPT,
+                "-postScript",
+                "FunctionDecompile.py",
+                offset,
+                output_path,
+                "-log",
+                "ghidra_log.txt"]
+    # Execute Ghidra plugin
+    log.debug("Ghidra analysis started")
+    stdout, stderr = await async_run_command(command)
+    log.debug("Ghidra analysis completed")
 
-            # Check if the JSON response is available
-            if os.path.isfile(output_path):
-                with open(output_path) as f_in:
-                    return (f_in.read(), 200)
-            else:
-                raise BadRequest("FunctionDecompile plugin failure")
-        else:
-            raise BadRequest("Sample has not been analyzed")
-
-    except BadRequest:
-        raise
-
-    except Exception:
-        raise BadRequest("Sample analysis failed")
+    # Check if the JSON response is available
+    if os.path.isfile(output_path):
+        with open(output_path) as f_in:
+            return (f_in.read(), 200)
+    else:
+        raise HTTPException(500, "FunctionDecompile plugin failure")
 
 
-@app.route("/ghidra/api/analysis_terminated/<string:sha256>")
-def analysis_terminated(sha256):
+@app.get("/ghidra/api/analysis_terminated/{sha256}")
+async def analysis_terminated(sha256: str):
     """
     Given a sha256, and an offset, remove the Ghidra project
     associated to that sample. Returns an error if the project does
     not exist.
     """
-    try:
-        project_path = os.path.join(GHIDRA_PROJECT, sha256 + ".gpr")
-        project_folder_path = os.path.join(GHIDRA_PROJECT, sha256 + ".rep")
-        # Check if the sample has been analyzed
-        if os.path.isfile(project_path) and os.path.isdir(project_folder_path):
-            os.remove(project_path)
-            log.debug("Ghidra project .gpr removed")
-            shutil.rmtree(project_folder_path)
-            log.debug("Ghidra project folder .rep removed")
-            return ("Analysis terminated", 200)
-        else:
-            raise BadRequest("Sample does not exist.")
-
-    except BadRequest:
-        raise
-
-    except Exception:
-        raise BadRequest("Analysis terminated failed")
-
-
-#############################################
-#       GHIDRAAAS APIs for IDA plugin       #
-#############################################
-
-@app.route("/ghidra/api/ida_plugin_checkin/", methods=["POST"])
-def ida_plugin_checkin():
-    """
-    Submit the .bytes file to ghidraaas for future decompilation
-    """
-    try:
-        # Process the bytes file
-        if not request.files.get("bytes"):
-            raise BadRequest(".bytes file is required")
-
-        sample_content = request.files.get("bytes").stream.read()
-        if len(sample_content) == 0:
-            raise BadRequest("Empty file .bytes received")
-
-        # Process metadata associated to the bytes file
-        if not request.files.get("data"):
-            raise BadRequest("data is required")
-        data = json.loads(request.files['data'].stream.read().decode('utf-8'))
-
-        # Using md5, since IDA stores it in the IDB
-        md5 = data.get('md5', None)
-        if not md5:
-            raise BadRequest("md5 hash is required")
-        filename = data.get("filename", None)
-        if not filename:
-            raise BadRequest("filename is required")
-
-        stream = request.files.get("bytes").stream
-        binary_file_path = os.path.join(IDA_SAMPLES_DIR, "%s.bytes" % filename)
-        stream.seek(0)
-        with open(binary_file_path, "wb") as f_out:
-            f_out.write(stream.read())
-
-        if not os.path.isfile(binary_file_path):
-            raise BadRequest("File saving failure")
-
-        log.debug("New binary file saved (filename: %s)" % filename)
-        return (json.dumps({
-            "status": "ok"
-        }), 200)
-
-    except BadRequest:
-        raise
-
-    except Exception:
-        log.exception("IDA plugin checkin failed")
-        raise BadRequest("IDA plugin checkin failed")
-
-
-@app.route("/ghidra/api/ida_plugin_get_decompiled_function/", methods=["POST"])
-def ida_plugin_get_decompiled_function():
-    """
-    Run the script to decompile a function starting
-    from the xml project exported from IDA.
-    """
-    try:
-        # Process the xml file
-        if not request.files.get("xml"):
-            raise BadRequest(".xml file is required")
-
-        sample_content = request.files.get("xml").stream.read()
-        if len(sample_content) == 0:
-            raise BadRequest("Empty file .xml received")
-
-        # Process metadata associated with the request
-        if not request.files.get("data"):
-            raise BadRequest("data is required")
-        data = json.loads(request.files['data'].stream.read().decode('utf-8'))
-
-        # Using md5, since IDA stores it in the IDB
-        md5 = data.get('md5', None)
-        if not md5:
-            raise BadRequest("md5 hash is required")
-        filename = data.get("filename", None)
-        if not filename:
-            raise BadRequest("filename is required")
-        address = data.get('address', None)
-        if not address:
-            raise BadRequest("address is required")
-
-        stream = request.files.get("xml").stream
-        xml_file_path = os.path.join(IDA_SAMPLES_DIR, "%s.xml" % filename)
-        stream.seek(0)
-        with open(xml_file_path, "wb") as f_out:
-            f_out.write(stream.read())
-
-        if not os.path.isfile(xml_file_path):
-            raise BadRequest("File saving failure")
-
-        log.debug("New xml file saved (filename: %s)" % filename)
-
-        b_filename = filename + ".bytes"
-        if not os.path.isfile(os.path.join(IDA_SAMPLES_DIR, b_filename)):
-            raise BadRequest("Bytes file not exist")
-
-        output_path = os.path.join(
-            GHIDRA_OUTPUT, "%s_dec_%s.json" % (md5, address))
-
-        cmd = [GHIDRA_HEADLESS,
-               ".",
-               "Temp",
-               "-import",
-               xml_file_path,
-               '-scriptPath',
-               GHIDRA_SCRIPT,
-               '-postScript',
-               'FunctionDecompile.py',
-               address,
-               output_path,
-               "-noanalysis",
-               "-deleteProject",
-               "-log",
-               "ghidra_log.txt"]
-
-        # Execute Ghidra plugin
-        log.debug("Ghidra analysis started")
-        p = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT)
-        p.wait()
-        print(''.join(s.decode("utf-8") for s in list(p.stdout)))
-        log.debug("Ghidra analysis completed")
-
-        # Check if the JSON response is available
-        response = None
-        if os.path.isfile(output_path):
-            with open(output_path) as f_in:
-                response = f_in.read()
-
-        if response:
-            try:
-                os.remove(xml_file_path)
-                log.debug("File %s removed", xml_file_path)
-            except Exception:
-                pass
-            try:
-                os.remove(output_path)
-                log.debug("File %s removed", output_path)
-            except Exception:
-                pass
-            return (response, 200)
-        else:
-            raise BadRequest("IDA plugin decompilation failed")
-
-    except BadRequest:
-        raise
-
-    except Exception:
-        log.exception("IDA plugin decompilation failed")
-        raise BadRequest("IDA plugin decompilation failed")
-
-
-@app.route("/ghidra/api/ida_plugin_checkout/", methods=["POST"])
-def ida_plugin_checkout():
-    """
-    Remove files associated with the sample requesting checkout
-    """
-    try:
-        if not request.json:
-            raise BadRequest("json data required")
-
-        j = json.loads(request.json)
-        md5 = j.get("md5", None)
-        if not md5:
-            raise BadRequest("md5 hash is required")
-        filename = j.get("filename", None)
-        if not filename:
-            raise BadRequest("filename is required")
-
-        binary_file_path = os.path.join(IDA_SAMPLES_DIR, "%s.bytes" % filename)
-        if os.path.isfile(binary_file_path):
-            os.remove(binary_file_path)
-            log.debug("File %s removed", binary_file_path)
-
-        return ("OK", 200)
-
-    except BadRequest:
-        raise
-
-    except Exception:
-        log.exception("IDA plugin checkout failed")
-        raise BadRequest("IDA plugin checkout failed")
-
+    project_path = get_project_path(sha256)
+    project_folder_path = os.path.join(GHIDRA_PROJECT, sha256 + ".rep")
+    os.remove(project_path)
+    log.debug("Ghidra project .gpr removed")
+    shutil.rmtree(project_folder_path)
+    log.debug("Ghidra project folder .rep removed")
+    return "Analysis terminated"
 
 #############################################
 #       ERROR HANDLING                      #
 #############################################
-# TODO
-# @app.errorhandler(BadRequest)
-# @app.errorhandler(HTTPException)
-# @app.errorhandler(Exception)
-# def handle_error(e):
-#     """
-#     Manage logging and responses in case of error.
-#     """
-#     if isinstance(e, HTTPException):
-#         return (str(e), e.code)
-#     else:
-#         return (traceback.format_exc(), 500)
-
+@app.exception_handler(Exception)
+async def default_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"message": f"{exc}"},
+    )
 
 set_logger(True)
 server_init()

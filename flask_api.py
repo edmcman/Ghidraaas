@@ -278,7 +278,7 @@ async def get_decompiled_function(sha256: str, offset: str):
     # Check if the JSON response is available
     if os.path.isfile(output_path):
         with open(output_path) as f_in:
-            return (f_in.read(), 200)
+            return f_in.read()
     else:
         raise HTTPException(500, "FunctionDecompile plugin failure")
 

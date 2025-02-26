@@ -25,7 +25,7 @@
 import json
 import requests
 
-URL = "http://localhost:8080/ghidra/api"
+URL = "http://localhost:8000/ghidra/api"
 BINARY = "test_files/a.out"
 BYTES = "test_files/AAE30A28635D1D634F3D9BF9A04E0055_gYBqc.bytes"
 XML = "test_files/AAE30A28635D1D634F3D9BF9A04E0055_gYBqc.xml"

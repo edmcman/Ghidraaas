@@ -49,6 +49,8 @@ with open("config/config.json") as f_in:
     GHIDRA_PROJECT = j['GHIDRA_PROJECT']
     GHIDRA_PATH = j['GHIDRA_PATH']
     GHIDRA_HEADLESS = os.path.join(GHIDRA_PATH, "support/analyzeHeadless")
+    assert os.path.isfile(GHIDRA_HEADLESS) and os.access(GHIDRA_HEADLESS, os.X_OK), \
+      f"Unable to find Ghidra analyzeHeadless command at {GHIDRA_HEADLESS}"
 
 
 #############################################

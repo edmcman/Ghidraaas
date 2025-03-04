@@ -47,6 +47,8 @@ with open("config/config.json") as f_in:
     GHIDRA_PROJECT = j['GHIDRA_PROJECT']
     GHIDRA_PATH = j['GHIDRA_PATH']
     GHIDRA_HEADLESS = os.path.join(GHIDRA_PATH, "support/analyzeHeadless")
+    assert os.path.isfile(GHIDRA_HEADLESS) and os.access(GHIDRA_HEADLESS, os.X_OK), \
+      f"Unable to find Ghidra analyzeHeadless command at {GHIDRA_HEADLESS}"
 
 
 #############################################
@@ -83,13 +85,22 @@ async def async_run_command(command):
     stdout, stderr = await p.communicate()
     return stdout, stderr
 
-def get_project_path(sha256):
-    project_path = os.path.join(GHIDRA_PROJECT, sha256 + ".gpr")
-    # Check if the sample has been analyzed
-    if os.path.isfile(project_path):
-        return project_path
-    else:
-        raise HTTPException(404, "Sample has not been analyzed")
+def get_project_name(sha256):
+    return sha256[:60]
+
+def get_project_path(sha256, check=True):
+    projname = get_project_name(sha256)
+    project_path = os.path.join(GHIDRA_PROJECT, projname + ".gpr")
+
+    if check:
+        # Check if the sample has been analyzed
+        if os.path.isfile(project_path):
+            pass
+        else:
+            raise HTTPException(404, "Sample has not been analyzed")
+        
+    return project_path
+
 
 def sha256_hash(str):
     """
@@ -165,14 +176,14 @@ async def analyze_sample(sample: UploadFile):
     log.debug("New sample saved (sha256: %s)" % sha256)
 
     # Check if the sample has been analyzed
-    project_path = os.path.join(GHIDRA_PROJECT, sha256 + ".gpr")
+    project_path = get_project_path(sha256, check=False)
     if not os.path.isfile(project_path):
         log.debug("Ghidra analysis started")
 
         # Import the sample in Ghidra and perform the analysis
         command = [GHIDRA_HEADLESS,
                     GHIDRA_PROJECT,
-                    sha256,
+                    get_project_name(sha256),
                     "-import",
                     sample_path]
         stdout, stderr = await async_run_command(command)
@@ -189,12 +200,13 @@ async def get_functions_list_detailed(sha256: str):
     If the sample has not been analyzed, returns an error.
     """
     project_path = get_project_path(sha256)
+    project_name = get_project_name(sha256)
     output_path = os.path.join(
         GHIDRA_OUTPUT, sha256 + "functions_list_a.json")
 
     command = [GHIDRA_HEADLESS,
                 GHIDRA_PROJECT,
-                sha256,
+                project_name,
                 "-process",
                 sha256,
                 "-noanalysis",
@@ -222,11 +234,13 @@ async def get_functions_list(sha256: str):
     If the sample has not been analyzed, returns an error.
     """
     project_path = get_project_path(sha256)
+    project_name = get_project_name(sha256)
+
     output_path = os.path.join(
         GHIDRA_OUTPUT, sha256 + "functions_list.json")
     command = [GHIDRA_HEADLESS,
                 GHIDRA_PROJECT,
-                sha256,
+                project_name,
                 "-process",
                 sha256,
                 "-noanalysis",
@@ -256,12 +270,14 @@ async def get_decompiled_function(sha256: str, offset: str):
     or if the offset does not correspond to a function
     """
     project_path = get_project_path(sha256)
+    project_name = get_project_name(sha256)
+
     output_path = os.path.join(
         GHIDRA_OUTPUT, sha256 + "function_decompiled.json")
     # Call the DecompileFunction Ghidra plugin
     command = [GHIDRA_HEADLESS,
                 GHIDRA_PROJECT,
-                sha256,
+                project_name,
                 "-process",
                 sha256,
                 "-noanalysis",

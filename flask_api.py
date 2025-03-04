@@ -26,9 +26,7 @@ import hashlib
 import json
 import os
 import shutil
-import subprocess
-import traceback
-from typing import Annotated
+import time
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -65,8 +63,17 @@ def set_logger(debug):
         loglevel = 'DEBUG'
     else:
         loglevel = 'INFO'
-    coloredlogs.install(fmt='%(asctime)s %(levelname)s:: %(message)s',
-                        datefmt='%H:%M:%S', level=loglevel, logger=log)
+    #coloredlogs.install(fmt='%(asctime)s %(levelname)s:: %(message)s',
+    #                    datefmt='%H:%M:%S', level=loglevel, logger=log)
+
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    log.debug(f"Processing request for {request.url}")
+    # start_time = time.perf_counter()
+    response = await call_next(request)
+    # process_time = time.perf_counter() - start_time
+    log.debug(f"Finished request for {request.url}")
+    return response
 
 async def async_run_command(command):
     """
@@ -199,9 +206,7 @@ async def get_functions_list_detailed(sha256: str):
                 "-log",
                 "ghidra_log.txt"]
     # Execute Ghidra plugin
-    log.debug("Ghidra analysis started")
     stdout, stderr = await async_run_command(command)
-    log.debug("Ghidra analysis completed")
 
     # Check if JSON response is available
     if os.path.isfile(output_path):
@@ -233,9 +238,7 @@ async def get_functions_list(sha256: str):
                 "-log",
                 "ghidra_log.txt"]
     # Execute Ghidra plugin
-    log.debug("Ghidra analysis started")
     stdout, stderr = await async_run_command(command)
-    log.debug("Ghidra analysis completed")
 
     # Check if JSON response is available
     if os.path.isfile(output_path):
@@ -271,9 +274,7 @@ async def get_decompiled_function(sha256: str, offset: str):
                 "-log",
                 "ghidra_log.txt"]
     # Execute Ghidra plugin
-    log.debug("Ghidra analysis started")
     stdout, stderr = await async_run_command(command)
-    log.debug("Ghidra analysis completed")
 
     # Check if the JSON response is available
     if os.path.isfile(output_path):
